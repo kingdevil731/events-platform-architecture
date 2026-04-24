@@ -1,0 +1,1 @@
+# events-platform-architecture
