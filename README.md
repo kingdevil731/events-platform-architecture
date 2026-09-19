@@ -1,154 +1,156 @@
-# Events Platform
+# MozCultura — Events Platform
 
-Architecture showcase for a private event commerce platform.
+Architecture showcase for a Mozambique-first events discovery and organizer
+operations platform. The implementation is private; this repository documents
+the system design and the decisions behind it.
 
-Focus areas:
+**Status:** V1 (discovery) running in staging. V2 (transactional) built and
+feature-flagged off. See [Product modes](docs/product-modes.md).
 
-- Ticketing workflows
-- Offline-first sync systems
-- Reconciliation logic
-- Distributed state handling
-- Operational tooling
+---
 
-## Live Application
+## What it is
 
-Add staging or live URL here.
+A Turborepo/pnpm monorepo with six deployable surfaces sharing one API contract
+package:
 
-## Overview
+| Surface         | Stack                                   | Role                                     |
+| --------------- | --------------------------------------- | ---------------------------------------- |
+| `api`           | Express, TypeScript, Prisma, PostgreSQL | Single backend, port 8080                |
+| `mobile`        | React Native, Expo 54, Expo Router      | Primary customer surface                 |
+| `web-customer`  | Next.js 15, Mantine                     | Web discovery and event pages            |
+| `web-organizer` | Next.js 15, Mantine                     | Organizer console                        |
+| `checkin-web`   | Next.js 15                              | Venue door app (V2)                      |
+| `web-links`     | Next.js 15                              | Universal/app-link bridge for deep links |
 
-Platform supporting:
+Shared packages: `shared` (Zod schemas and DTOs — the single source of truth for
+API contracts), `i18n` (i18next, PT/EN), `design-tokens`.
 
-- Event discovery
-- Ticket purchases
-- Ticket wallet and QR tickets
-- Organizer reporting
-- Offline venue check-in
-- Sync replay and reconciliation
+Infrastructure: PostgreSQL, Redis, Docker Compose for local development plus two
+staging variants (shared host infra, and fully self-contained). 24 Prisma
+migrations to date.
 
-## Standout Engineering Problem
+---
 
-How can venue check-in continue working when connectivity fails,
-without corrupting ticket validity or introducing inconsistent state?
+## The three problems worth reading about
 
-This led to an offline-first replay architecture.
+Most of this system is ordinary CRUD done carefully. Three parts required real
+decisions, and each has its own document.
 
-## Core Architecture
+### 1. Shipping a transactional platform in non-transactional mode
 
-Customer App
-↓
-Ticketing Platform
-↓
-QR Validation / Check-In App
-↓
-Offline Queue
-↓
-Sync Replay Engine
-↓
-Reconciliation Layer
+Mobile money in Mozambique means M-Pesa and e-Mola, and organizers already
+collect payment through those channels directly. Launching as a payment
+processor before having any audience would have meant carrying payment
+compliance and reconciliation risk to serve organizers who did not yet trust the
+platform.
 
-## Ticket Lifecycle
+So V1 ships discovery only, while the orders, payments, tickets, wallet and
+check-in code paths stay in the codebase, compiled, and switched off at build
+time. V2 is a flag flip and a promotion of hidden routes back into navigation,
+not a rewrite.
 
-Discover Event
-↓
-Purchase Ticket
-↓
-Ticket Confirmation
-↓
-QR Ticket Issued
-↓
-Venue Check-In
-↓
-Offline Queue (if needed)
-↓
-Replay / Validation
-↓
-Final Reconciliation
+The hard part is not the flag. It is preventing eighteen months of drift in code
+nobody exercises. → **[Product modes and the V1/V2 boundary](docs/product-modes.md)**
 
-## Offline Sync State Model
+### 2. Check-in when the venue has no signal
 
-Check-in events move through states:
+Venues in Maputo lose connectivity, and a door that stops scanning is worse than
+a door with no scanner at all. The design question is what a scanner should do
+when it cannot reach the server and cannot know whether a ticket was already
+used at the other gate.
 
-PENDING_SYNC
-→ SYNCED
-→ DUPLICATE
-→ INVALID
-→ CONFLICT
-→ FAILED
+The answer here is deliberately _not_ automatic conflict resolution. It is a
+local queue with a six-state model that routes every disagreement to the
+supervisor standing three metres away. → **[Offline check-in](docs/offline-checkin.md)**
 
-## Engineering Challenges Solved
+**This is V2 code and has not run at a live event.** It is documented as a
+design, not as a result.
 
-- Offline-first operation
-- Replay queue processing
-- Duplicate scan handling
-- Conflict detection
-- Eventual consistency
-- Operational reconciliation
+### 3. One contract, six surfaces
 
-## Stack
+Six clients against one API, two of them native, and no appetite for a
+hand-maintained SDK. `packages/shared` holds Zod schemas that produce both the
+runtime validators the API uses and the TypeScript types every client imports,
+so a breaking change fails the build rather than reaching production.
+→ **[Architecture](docs/architecture.md)**
 
-Backend
+---
 
-- Node.js
-- TypeScript
-- PostgreSQL
-- Prisma
-- Docker
+## System shape
 
-Frontend
+```mermaid
+flowchart TB
+    subgraph clients[Client surfaces]
+        M[mobile<br/>Expo]
+        WC[web-customer]
+        WO[web-organizer]
+        CI[checkin-web<br/>V2]
+        WL[web-links]
+    end
 
-- React
-- Next.js
+    SH[["packages/shared<br/>Zod schemas + DTOs"]]
 
-Operational Concepts
+    API[api<br/>Express + Prisma]
+    PG[(PostgreSQL)]
+    RD[(Redis)]
 
-- Offline queue
-- Replay engine
-- Reconciliation workflows
+    M --- SH
+    WC --- SH
+    WO --- SH
+    CI --- SH
+    WL --- SH
 
-## Architecture Metrics
+    M --> API
+    WC --> API
+    WO --> API
+    CI --> API
+    WL --> API
 
-Capability → Approach
+    API --> PG
+    API --> RD
+```
 
-Offline Sync → Queued Replay
-Validation → Conflict-Aware
-Ticket State → Server Reconciliation
-Operations → Organizer Reporting
+`packages/shared` is a compile-time dependency, not a network hop — every
+surface imports the same schemas the API validates against.
 
-## Architecture Decisions
+---
 
-### Why offline queueing
+## Engineering practice
 
-Allows venue operations to continue without connectivity.
+- **Biome** for lint and format across the monorepo.
+- **CI enforces documentation.** `repo-standards.yml` fails any pull request if
+  the architecture guardrails, design doc, mobile guide, API guide or check-in
+  spec are missing. Docs rot when nothing checks them.
+- **Forward-only migrations**, 24 applied, each reviewed for table locks.
+- **Self-conducted security review** — see the V1 review in the private
+  repository; findings tracked as issues rather than a checklist.
+- Feature flags resolve at build time via `NEXT_PUBLIC_*` inlining, which
+  requires literal property access; dynamic lookups silently fail to inline.
+  That constraint is documented at the call site because it is not obvious.
 
-### Why replay model
+---
 
-Supports resilient sync after reconnect.
+## Roadmap
 
-### Why reconciliation layer
+Honest separation between what runs and what is designed.
 
-Separates sync from authoritative ticket state validation.
+|                                                              | Status                                                                  |
+| ------------------------------------------------------------ | ----------------------------------------------------------------------- |
+| Event discovery, organizer console, auth, follows, favorites | Running in staging                                                      |
+| Orders, payments, tickets, wallet                            | Built, flagged off, not exercised                                       |
+| Offline check-in queue and supervisor review                 | Built, flagged off, never used at a gate                                |
+| Server-side scan idempotency                                 | Designed, not built — see [offline-checkin.md](docs/offline-checkin.md) |
+| Cross-device conflict detection                              | Designed, not built                                                     |
+| Payment provider integration (M-Pesa, e-Mola)                | Not started                                                             |
 
-## Future Scaling Considerations
+The gap between the third and fourth rows is the honest state of the offline
+work: the client half exists, the server half that would make replay safe across
+multiple gates does not.
 
-Potential evolution:
+---
 
-- Distributed replay workers
-- More advanced idempotency controls
-- Analytics instrumentation
-- Multi-venue operational scaling
+## Repository note
 
-## Screenshots
-
-Add:
-
-- Event discovery
-- Checkout flow
-- Ticket wallet
-- Check-in app
-- Reconciliation dashboard
-
-## Repository Note
-
-This repository intentionally contains architecture documentation and showcase material only.
-
-Core implementation remains private.
+This repository contains architecture documentation only. The implementation
+is private.
