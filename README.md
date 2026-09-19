@@ -150,6 +150,17 @@ multiple gates does not.
 
 ---
 
+## Documents
+
+|                                             |                                                                                       |
+| ------------------------------------------- | ------------------------------------------------------------------------------------- |
+| [Architecture](docs/architecture.md)        | Monorepo layout, the shared contract package, backend structure, data and CI          |
+| [Product modes](docs/product-modes.md)      | How a discovery-only V1 ships with the transactional V2 path compiled and flagged off |
+| [Offline check-in](docs/offline-checkin.md) | The six-state sync queue, why conflicts go to a human, and what it does not do        |
+| [Decisions](docs/decisions.md)              | Each choice with the alternative rejected and the cost accepted                       |
+
+---
+
 ## Repository note
 
 This repository contains architecture documentation only. The implementation
